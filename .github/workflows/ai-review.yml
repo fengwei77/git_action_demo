@@ -75,7 +75,7 @@ jobs:
           }
           ' | curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY2 }}" \
             -d @-)
 
           echo "===== API RESPONSE START ====="
