@@ -38,22 +38,18 @@ jobs:
           echo "$DIFF" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 3：【終極修正】呼叫 GLM API 進行程式碼審查
+      # 步驟 3：【最終終極修正】呼叫 GLM API 進行程式碼審查
       - name: Call GLM API for review
         id: call-ai
         if: steps.get-diff.outputs.diff != ''
         run: |
-          # 確保 jq 已安裝
-          sudo apt-get update && sudo apt-get install -y jq
+          # 【關鍵改變】使用 Here Document 安全地將多行 diff 寫入檔案
+          # 這種方法可以完美處理所有特殊字元和換行符，不會破壞 Shell 語法
+          cat > diff_content.txt << 'EOF'
+          ${{ steps.get-diff.outputs.diff }}
+          EOF
 
-          # 【關鍵改變】
-          # 1. 將 diff 內容寫入一個臨時檔案
-          echo "${{ steps.get-diff.outputs.diff }}" > diff_content.txt
-
-          # 2. 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
-          # --rawfile diff_content diff_content.txt: 將檔案內容讀入 jq 變數 $diff_content
-          # -n: 讓 jq 從 null 開始建構 JSON
-          # 最後用 `| curl ... -d @-` 將 jq 的輸出作為 curl 的資料來源
+          # 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
           RESPONSE=$(jq -n --rawfile diff_content diff_content.txt '
           {
             model: "glm-4",
