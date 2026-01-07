@@ -111,17 +111,25 @@ jobs:
           echo "沒有檢測到程式碼變更，無需審查。" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-           # 步驟 5：【最終修正】將審查結果發布到 Pull Request
+      # 步驟 5：【絕對正確版】將審查結果發布到 Pull Request
       - name: Post or update review comment
         uses: actions/github-script@v7
+        # 【關鍵修正】使用 env 來傳遞我們自訂的資料
+        env:
+          REVIEW_OUTPUT: ${{ steps.call-ai.outputs.review }}
+          NO_CHANGES_OUTPUT: ${{ steps.no-changes.outputs.review }}
         with:
-          # 【修正處】直接在腳本中透過變數名稱存取 with 中的輸入
-          # GitHub 會自動將 kebab-case (review-output) 轉換為 camelCase (reviewOutput)
           script: |
             const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
             
-            // 直接使用變數名稱，而不是 inputs.xxx
-            const reviewText = reviewOutput || noChangesOutput || '審查過程中發生未知錯誤。';
+            // 【關鍵修正】從 process.env 中讀取環境變數
+            const reviewText = process.env.REVIEW_OUTPUT || process.env.NO_CHANGES_OUTPUT || '審查過程中發生未知錯誤。';
+
+            // 如果沒有實質內容，就不發布評論
+            if (!reviewText || reviewText.trim() === '') {
+              console.log("審查內容為空，跳過發布評論。");
+              return;
+            }
 
             const comments = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -152,6 +160,3 @@ jobs:
               });
               console.log("已創建新評論");
             }
-          # 在這裡定義要傳遞給 script 的 inputs
-          review-output: ${{ steps.call-ai.outputs.review }}
-          no-changes-output: ${{ steps.no-changes.outputs.review }}
