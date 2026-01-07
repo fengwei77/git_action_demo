@@ -6,31 +6,34 @@ name: AI Code Review
 on:
   pull_request:
     branches: [ main ]
-    types: [opened, synchronize] # 'synchronize' 是關鍵，它代表後續的提交
+    types: [opened, synchronize]
 
 # 工作流程權限
 permissions:
-  pull-requests: write # 需要寫入權限才能發布評論
-  issues: read         # 需要讀取權限才能找到舊評論
+  pull-requests: write
+  issues: read
 
 jobs:
   ai-review-job:
-    runs-on: ubuntu-latest # 使用最新版的 Ubuntu 虛擬機
+    runs-on: ubuntu-latest
 
     steps:
       # 步驟 1：檢出專案程式碼
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 需要完整的歷史記錄才能計算程式碼差異
+          fetch-depth: 0
 
-      # 步驟 2：獲取本次 Pull Request 的程式碼變更內容
+      # 步驟 2：獲取本次 Pull Request 的程式碼變更內容 (已修正)
       - name: Get code diff
         id: get-diff
         run: |
-          # 計算目標分支 和來源分支 的差異
-          DIFF=$(git diff --unified=0 origin/${{ github.event.pull_request.base.ref }}...${{ github.event.pull_request.head.ref }})
-          # 將差異內容存到一個變數裡，供後續步驟使用
+          # 【修正處】
+          # 我們直接使用 GitHub 提供的 commit SHA 來計算差異，這是最穩定、最可靠的方法。
+          # github.event.pull_request.base.sha 是目標分支 的最新 commit
+          # github.event.pull_request.head.sha 是來源分支 的最新 commit
+          DIFF=$(git diff --unified=0 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
           echo "diff<<EOF" >> $GITHUB_OUTPUT
           echo "$DIFF" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -38,8 +41,9 @@ jobs:
       # 步驟 3：呼叫 GLM API 進行程式碼審查
       - name: Call GLM API for review
         id: call-ai
+        # 【新增】如果沒有程式碼變更，就跳過這個步驟，節省資源
+        if: steps.get-diff.outputs.diff != ''
         run: |
-          # 準備給 AI 的指令，這個 Prompt 很重要！
           PROMPT=$(cat <<EOF
           你是一位資深的軟體工程師，請審查以下程式碼變更。
           請從以下幾點提供具體回饋：
@@ -56,7 +60,6 @@ jobs:
           EOF
           )
 
-          # 使用 curl 呼叫 GLM API
           RESPONSE=$(curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY }}" \
@@ -66,26 +69,21 @@ jobs:
               \"temperature\": 0.3
             }")
 
-          # 用 jq 工具解析 JSON 回應，取出 AI 生成的文字
           REVIEW_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
           
-          # 將審查結果存到變數裡
           echo "review<<EOF" >> $GITHUB_OUTPUT
           echo "$REVIEW_TEXT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 4：將審查結果發布到 Pull Request (會更新舊評論，保持整潔)
+      # 步驟 4：將審查結果發布到 Pull Request
       - name: Post or update review comment
         uses: actions/github-script@v7
+        # 【新增】如果 AI 沒有產出審查內容，也跳過這個步驟
+        if: steps.call-ai.outputs.review != ''
         with:
           script: |
             const reviewOutput = `${{ steps.call-ai.outputs.review }}`;
-            const botIdentifier = '### 🤖 GLM AI 程式碼審查報告'; // 用來識別機器人評論的標題
-
-            if (!reviewOutput || reviewOutput.trim() === '') {
-              console.log("AI 沒有返回審查內容，跳過發布評論。");
-              return;
-            }
+            const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
 
             // 獲取此 PR 的所有評論
             const comments = await github.rest.issues.listComments({
@@ -102,7 +100,6 @@ jobs:
             const newBody = `${botIdentifier}\n\n${reviewOutput}`;
 
             if (existingComment) {
-              // 如果找到了舊評論，就更新它
               await github.rest.issues.updateComment({
                 comment_id: existingComment.id,
                 owner: context.repo.owner,
@@ -111,7 +108,6 @@ jobs:
               });
               console.log(`已更新評論 #${existingComment.id}`);
             } else {
-              // 如果沒找到舊評論，就創建一條新的
               await github.rest.issues.createComment({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
