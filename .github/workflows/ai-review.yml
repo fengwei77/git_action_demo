@@ -53,7 +53,7 @@ jobs:
           # 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
           RESPONSE=$(jq -n --rawfile diff_content diff_content.txt '
           {
-            model: "GLM-4-32B-0414-128K",
+            model: "GLM-4.6V-Flash",
             messages: [
               {
                 role: "user",
@@ -75,7 +75,7 @@ jobs:
           }
           ' | curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY2 }}" \
+            -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY }}" \
             -d @-)
 
           echo "===== API RESPONSE START ====="
