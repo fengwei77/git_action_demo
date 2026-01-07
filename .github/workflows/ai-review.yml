@@ -10,8 +10,9 @@ on:
 
 # 工作流程權限
 permissions:
-  pull-requests: write
-  issues: read
+  pull-requests: write # 發布/更新評論需要
+  issues: read         # 讀取評論需要
+  contents: write      # 【新增】合併程式碼需要
 
 jobs:
   ai-review-job:
@@ -52,7 +53,7 @@ jobs:
           # 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
           RESPONSE=$(jq -n --rawfile diff_content diff_content.txt '
           {
-            model: "glm-4.7",
+            model: "glm-4.5",
             messages: [
               {
                 role: "user",
@@ -159,4 +160,56 @@ jobs:
                 body: newBody
               });
               console.log("已創建新評論");
+            }
+
+    # 步驟 6：【新增】如果 AI 批准，則自動合併
+      - name: Auto-merge if approved
+        uses: actions/github-script@v7
+        # 只有在 AI 審查步驟成功後才執行
+        if: steps.call-ai.outcome == 'success'
+        with:
+          script: |
+            const APPROVAL_KEYWORD = "審查通過：LGTM";
+            const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
+
+            // 1. 獲取此 PR 的所有評論
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            // 2. 尋找機器人發布的最新評論
+            const botComment = comments.data
+              .filter(comment => comment.user.type === 'Bot' && comment.body.includes(botIdentifier))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+
+            // 3. 檢查評論中是否包含批准關鍵字
+            if (botComment && botComment.body.includes(APPROVAL_KEYWORD)) {
+              console.log(`找到批准關鍵字 "${APPROVAL_KEYWORD}"，準備自動合併...`);
+
+              try {
+                // 4. 執行合併
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  // 使用 'squash' 可以保持歷史記錄乾淨，將所有 commit 合併為一個
+                  merge_method: 'squash', 
+                  commit_title: `Auto-merge PR #${context.issue.number}: ${context.payload.pull_request.title}`,
+                  commit_message: `自動合併，由 AI 審查通過。\n\n${context.payload.pull_request.body}`
+                });
+                console.log('✅ PR 已成功自動合併！');
+              } catch (error) {
+                console.error(`❌ 自動合併失敗: ${error.message}`);
+                // 如果合併失敗（例如，有合併衝突），可以在 PR 上留個言
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: `⚠️ AI 已批准合併，但自動合併失敗。請檢查是否有合併衝突或其他問題。\n\n錯誤訊息：\`${error.message}\``
+                });
+              }
+            } else {
+              console.log('AI 未給予批准，跳過自動合併。');
             }
