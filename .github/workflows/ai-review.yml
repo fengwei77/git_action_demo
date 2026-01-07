@@ -28,10 +28,8 @@ jobs:
       - name: Get code diff
         id: get-diff
         run: |
-          # 使用 GitHub 提供的 commit SHA 來計算差異
           DIFF=$(git diff --unified=0 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
           
-          # 輸出 diff 內容到日誌以便調試
           echo "===== CODE DIFF START ====="
           echo "$DIFF"
           echo "===== CODE DIFF END ====="
@@ -40,48 +38,49 @@ jobs:
           echo "$DIFF" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 3：呼叫 GLM API 進行程式碼審查
+      # 步驟 3：【最終終極修正】呼叫 GLM API 進行程式碼審查
       - name: Call GLM API for review
         id: call-ai
-        # 如果沒有程式碼變更，就跳過這個步驟
         if: steps.get-diff.outputs.diff != ''
         run: |
-          # 安裝 jq 工具，確保它可用
-          sudo apt-get update && sudo apt-get install -y jq
-          
-          PROMPT=$(cat <<EOF
-          你是一位資深的軟體工程師，請審查以下程式碼變更。
-          請從以下幾點提供具體回饋：
-          1.  **潛在錯誤**：邏輯錯誤、邊界問題等。
-          2.  **程式碼品質**：可讀性、可維護性、命名規範。
-          3.  **效能建議**：是否有更高效的寫法。
-          4.  **安全性**：是否有潛在的安全漏洞。
-
-          請使用 Markdown 格式回覆，並針對問題點給出程式碼片段作為說明。
-
-          --- 程式碼變更內容 ---
+          # 【關鍵改變】使用 Here Document 安全地將多行 diff 寫入檔案
+          # 這種方法可以完美處理所有特殊字元和換行符，不會破壞 Shell 語法
+          cat > diff_content.txt << 'EOF'
           ${{ steps.get-diff.outputs.diff }}
-          --- 程式碼變更結束 ---
           EOF
-          )
 
-          # 呼叫 API 並捕獲完整響應
-          echo "===== CALLING GLM API ====="
-          RESPONSE=$(curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
+          # 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
+          RESPONSE=$(jq -n --rawfile diff_content diff_content.txt '
+          {
+            model: "glm-4.7",
+            messages: [
+              {
+                role: "user",
+                content: (
+                  "你是一位資深的軟體工程師，請審查以下程式碼變更。\n\n" +
+                  "請從以下幾點提供具體回饋：\n" +
+                  "1.  **潛在錯誤**：邏輯錯誤、邊界問題等。\n" +
+                  "2.  **程式碼品質**：可讀性、可維護性、命名規範。\n" +
+                  "3.  **效能建議**：是否有更高效的寫法。\n" +
+                  "4.  **安全性**：是否有潛在的安全漏洞。\n\n" +
+                  "請使用 Markdown 格式回覆，並針對問題點給出程式碼片段作為說明。\n\n" +
+                  "--- 程式碼變更內容 ---\n" +
+                  $diff_content +
+                  "\n--- 程式碼變更結束 ---"
+                )
+              }
+            ],
+            temperature: 0.3
+          }
+          ' | curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY }}" \
-            -d "{
-              \"model\": \"glm-4\",
-              \"messages\": [{\"role\": \"user\", \"content\": \"$PROMPT\"}],
-              \"temperature\": 0.3
-            }")
-          
-          # 輸出完整響應到日誌以便調試
+            -d @-)
+
           echo "===== API RESPONSE START ====="
           echo "$RESPONSE"
           echo "===== API RESPONSE END ====="
           
-          # 檢查響應是否為空或包含錯誤
           if [ -z "$RESPONSE" ]; then
             echo "Error: Empty response from API"
             echo "review<<EOF" >> $GITHUB_OUTPUT
@@ -90,14 +89,12 @@ jobs:
             exit 0
           fi
           
-          # 嘗試解析響應
           REVIEW_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null)
           
-          # 檢查解析是否成功
           if [ -z "$REVIEW_TEXT" ] || [ "$REVIEW_TEXT" = "null" ]; then
             echo "Error: Failed to parse API response"
             echo "review<<EOF" >> $GITHUB_OUTPUT
-            echo "API 響應解析失敗。原始響應：\n\`\`\`json\n$RESPONSE\n\`\`\`" >> $GITHUB_OUTPUT
+            echo "API 響應解析失敗。詳細的原始響應請參考上方步驟的日誌。" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "review<<EOF" >> $GITHUB_OUTPUT
@@ -114,28 +111,37 @@ jobs:
           echo "沒有檢測到程式碼變更，無需審查。" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 5：將審查結果發布到 Pull Request
+      # 步驟 5：【絕對正確版】將審查結果發布到 Pull Request
       - name: Post or update review comment
         uses: actions/github-script@v7
+        # 【關鍵修正】使用 env 來傳遞我們自訂的資料
+        env:
+          REVIEW_OUTPUT: ${{ steps.call-ai.outputs.review }}
+          NO_CHANGES_OUTPUT: ${{ steps.no-changes.outputs.review }}
         with:
           script: |
-            // 根據是否有代碼變更來決定使用哪個輸出
-            const reviewOutput = `${{ steps.call-ai.outputs.review || steps.no-changes.outputs.review }}`;
             const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
+            
+            // 【關鍵修正】從 process.env 中讀取環境變數
+            const reviewText = process.env.REVIEW_OUTPUT || process.env.NO_CHANGES_OUTPUT || '審查過程中發生未知錯誤。';
 
-            // 獲取此 PR 的所有評論
+            // 如果沒有實質內容，就不發布評論
+            if (!reviewText || reviewText.trim() === '') {
+              console.log("審查內容為空，跳過發布評論。");
+              return;
+            }
+
             const comments = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
 
-            // 尋找機器人上次發布的評論
             const existingComment = comments.data.find(comment => 
               comment.user.type === 'Bot' && comment.body.includes(botIdentifier)
             );
 
-            const newBody = `${botIdentifier}\n\n${reviewOutput}`;
+            const newBody = `${botIdentifier}\n\n${reviewText}`;
 
             if (existingComment) {
               await github.rest.issues.updateComment({
