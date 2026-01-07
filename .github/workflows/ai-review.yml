@@ -24,15 +24,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 步驟 2：獲取本次 Pull Request 的程式碼變更內容 (已修正)
+      # 步驟 2：獲取本次 Pull Request 的程式碼變更內容
       - name: Get code diff
         id: get-diff
         run: |
-          # 【修正處】
-          # 我們直接使用 GitHub 提供的 commit SHA 來計算差異，這是最穩定、最可靠的方法。
-          # github.event.pull_request.base.sha 是目標分支 的最新 commit
-          # github.event.pull_request.head.sha 是來源分支 的最新 commit
+          # 使用 GitHub 提供的 commit SHA 來計算差異
           DIFF=$(git diff --unified=0 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
+          # 輸出 diff 內容到日誌以便調試
+          echo "===== CODE DIFF START ====="
+          echo "$DIFF"
+          echo "===== CODE DIFF END ====="
           
           echo "diff<<EOF" >> $GITHUB_OUTPUT
           echo "$DIFF" >> $GITHUB_OUTPUT
@@ -41,9 +43,12 @@ jobs:
       # 步驟 3：呼叫 GLM API 進行程式碼審查
       - name: Call GLM API for review
         id: call-ai
-        # 【新增】如果沒有程式碼變更，就跳過這個步驟，節省資源
+        # 如果沒有程式碼變更，就跳過這個步驟
         if: steps.get-diff.outputs.diff != ''
         run: |
+          # 安裝 jq 工具，確保它可用
+          sudo apt-get update && sudo apt-get install -y jq
+          
           PROMPT=$(cat <<EOF
           你是一位資深的軟體工程師，請審查以下程式碼變更。
           請從以下幾點提供具體回饋：
@@ -60,6 +65,8 @@ jobs:
           EOF
           )
 
+          # 呼叫 API 並捕獲完整響應
+          echo "===== CALLING GLM API ====="
           RESPONSE=$(curl -s -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.ZAI_API_KEY }}" \
@@ -68,21 +75,52 @@ jobs:
               \"messages\": [{\"role\": \"user\", \"content\": \"$PROMPT\"}],
               \"temperature\": 0.3
             }")
-
-          REVIEW_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
           
+          # 輸出完整響應到日誌以便調試
+          echo "===== API RESPONSE START ====="
+          echo "$RESPONSE"
+          echo "===== API RESPONSE END ====="
+          
+          # 檢查響應是否為空或包含錯誤
+          if [ -z "$RESPONSE" ]; then
+            echo "Error: Empty response from API"
+            echo "review<<EOF" >> $GITHUB_OUTPUT
+            echo "API 調用失敗：收到空響應。請檢查 API 密鑰和網路連接。" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 嘗試解析響應
+          REVIEW_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null)
+          
+          # 檢查解析是否成功
+          if [ -z "$REVIEW_TEXT" ] || [ "$REVIEW_TEXT" = "null" ]; then
+            echo "Error: Failed to parse API response"
+            echo "review<<EOF" >> $GITHUB_OUTPUT
+            echo "API 響應解析失敗。原始響應：\n\`\`\`json\n$RESPONSE\n\`\`\`" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "review<<EOF" >> $GITHUB_OUTPUT
+            echo "$REVIEW_TEXT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      # 步驟 4：處理沒有程式碼變更的情況
+      - name: Handle no code changes
+        id: no-changes
+        if: steps.get-diff.outputs.diff == ''
+        run: |
           echo "review<<EOF" >> $GITHUB_OUTPUT
-          echo "$REVIEW_TEXT" >> $GITHUB_OUTPUT
+          echo "沒有檢測到程式碼變更，無需審查。" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 4：將審查結果發布到 Pull Request
+      # 步驟 5：將審查結果發布到 Pull Request
       - name: Post or update review comment
         uses: actions/github-script@v7
-        # 【新增】如果 AI 沒有產出審查內容，也跳過這個步驟
-        if: steps.call-ai.outputs.review != ''
         with:
           script: |
-            const reviewOutput = `${{ steps.call-ai.outputs.review }}`;
+            // 根據是否有代碼變更來決定使用哪個輸出
+            const reviewOutput = `${{ steps.call-ai.outputs.review || steps.no-changes.outputs.review }}`;
             const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
 
             // 獲取此 PR 的所有評論
