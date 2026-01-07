@@ -52,7 +52,7 @@ jobs:
           # 使用 jq 來安全地建構 JSON 並直接透過管道傳給 curl
           RESPONSE=$(jq -n --rawfile diff_content diff_content.txt '
           {
-            model: "glm-4",
+            model: "glm-4.7",
             messages: [
               {
                 role: "user",
