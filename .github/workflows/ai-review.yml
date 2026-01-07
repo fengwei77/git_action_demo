@@ -111,13 +111,17 @@ jobs:
           echo "沒有檢測到程式碼變更，無需審查。" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # 步驟 5：將審查結果發布到 Pull Request
+           # 步驟 5：【最終修正】將審查結果發布到 Pull Request
       - name: Post or update review comment
         uses: actions/github-script@v7
         with:
+          # 【修正處】直接在腳本中透過變數名稱存取 with 中的輸入
+          # GitHub 會自動將 kebab-case (review-output) 轉換為 camelCase (reviewOutput)
           script: |
             const botIdentifier = '### 🤖 GLM AI 程式碼審查報告';
-            const reviewOutput = inputs.reviewOutput || inputs.noChangesOutput || '審查過程中發生未知錯誤。';
+            
+            // 直接使用變數名稱，而不是 inputs.xxx
+            const reviewText = reviewOutput || noChangesOutput || '審查過程中發生未知錯誤。';
 
             const comments = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -129,7 +133,7 @@ jobs:
               comment.user.type === 'Bot' && comment.body.includes(botIdentifier)
             );
 
-            const newBody = `${botIdentifier}\n\n${reviewOutput}`;
+            const newBody = `${botIdentifier}\n\n${reviewText}`;
 
             if (existingComment) {
               await github.rest.issues.updateComment({
@@ -148,5 +152,6 @@ jobs:
               });
               console.log("已創建新評論");
             }
+          # 在這裡定義要傳遞給 script 的 inputs
           review-output: ${{ steps.call-ai.outputs.review }}
           no-changes-output: ${{ steps.no-changes.outputs.review }}
